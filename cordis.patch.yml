@@ -1,0 +1,9 @@
+# dsh bundle patch: inserts this plugin into the stack of any profile that lists
+# the package in its `dsh.profile.bundles`. The composer dock arrives through the
+# package's `dsh.client` declaration; this row is the host half, and the profile
+# supplies the `servers` table it may launch.
+- insert:
+    - id: local-model
+      name: 'dsh-tool-local-model'
+      config:
+        servers: {}

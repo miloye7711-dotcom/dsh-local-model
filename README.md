@@ -24,6 +24,9 @@ pnpm run build
 
 Then mount the built package by absolute path, or `pnpm link` it into the harness that will load it.
 
+A `file:` dependency copies the package into the profile's `node_modules`; after editing sources, rebuild and copy `lib/` plus `client/` there again, or reinstall the profile.
+
+
 ## Configure
 
 Declare the servers this composition may start. `command`, `args`, and `cwd` go to the subprocess provider verbatim — no shell, so anything shell-shaped has to be spelled out.
@@ -32,6 +35,8 @@ Declare the servers this composition may start. `command`, `args`, and `cwd` go 
 - id: local-model
   name: 'dsh-tool-local-model'
   config:
+    default: strata        # what the bare `toggle` and the composer chip act on
+    exclusive: true        # starting one engine stops the others
     servers:
       ollama:
         command: 'ollama'
@@ -76,10 +81,23 @@ An empty `servers` table is valid: the tool is registered with nothing to start.
 |---|---|
 | `list` | only servers that are answering |
 | `status` | every configured server, answering or not |
-| `start` | spawn if down, then wait until the model listing answers; idempotent when already up; terminates the child if the budget runs out |
-| `stop` | terminate, wait for exit — only for servers **this plugin** started |
+| `start` | spawn if down, then wait until the model listing answers; idempotent when already up; terminates the child if the budget runs out; `server: "all"` starts every configured server |
+| `stop` | terminate, wait for exit — only for servers **this plugin** started; `server: "all"` stops every server it owns |
+| `toggle` | flip one server: stop it when it answers, start it when it is down; without a name it acts on `default` |
+
+Starting a server stops the others this plugin owns, because `exclusive` defaults to true: two local engines usually compete for the same device memory. Set `exclusive: false` to keep several resident at once.
 
 Readiness is one HTTP `GET <modelsPath>`: a server counts as up when it lists at least one model. That rule works for OpenAI-compatible servers and for Ollama-shaped listings (`data[].id` or `models[].name`).
+
+## Slash command
+
+`/local-model [status | list | start [server|all] | stop [server|all] | toggle [server] | diag <text>]` — the same actions from the composer. `diag` appends a timestamped line to `~/.dsh/local-model/client-diag.log`.
+
+## Composer control and shortcut
+
+The client half registers two 11px chips in `conversation.composer.dock`: `本地模型` toggles the `default` server only, `▾` opens a 272px panel with `状态`, one `● name` / `○ name` chip per configured server, one `用 <provider/model>` button per advertised ref, and the last result text. The panel only exists while open, so the dock row keeps its normal width; status text also lands in the transcript through the host command output.
+
+`Ctrl+Shift+L` (`Cmd+Shift+L` on macOS) runs the same toggle from anywhere in the page. Defaults are bound per platform profile in `SHORTCUT_DEFAULTS`, so rebinding goes through the harness shortcut settings.
 
 ## What this plugin does not do
 

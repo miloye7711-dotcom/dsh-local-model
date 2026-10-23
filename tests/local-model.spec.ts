@@ -2,7 +2,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import Commands from '@deepseek-ai/dsh-commands'
+import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
@@ -70,6 +72,8 @@ async function releasedPort(): Promise<number> {
  */
 class FakeSubprocess extends Service {
   readonly specs: SubprocessSpawnSpec[] = []
+  /** Specs whose handle was terminated, in order. */
+  readonly terminated: SubprocessSpawnSpec[] = []
   onSpawn: ((spec: SubprocessSpawnSpec) => void) | undefined
 
   constructor(ctx: Context) {
@@ -86,13 +90,14 @@ class FakeSubprocess extends Service {
       }
     })
     return {
-      pid: 4242,
       stdin: undefined,
       stdout: undefined,
       stderr: undefined,
+      control: undefined,
       collected: {},
       done,
       terminate: () => {
+        this.terminated.push(spec)
         settle()
       },
       waitForExit: () => done.then(() => undefined),
@@ -113,10 +118,21 @@ async function setup(config: tool.Config): Promise<Context> {
   return ctx
 }
 
+/** Compose the plugin with a real command registry, as an interactive deployment does. */
+async function setupWithCommands(config: tool.Config): Promise<Context> {
+  const ctx = new Context()
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(Commands)
+  await ctx.plugin(FakeSubprocess)
+  await ctx.plugin(tool, config)
+  return ctx
+}
+
 function callLocalModel(ctx: Context, args: unknown) {
   return ctx.tools.execute({
     signal: testToolSignal,
-    callId: CallId(`call-${Math.random().toString(16).slice(2)}`),
+    callId: ToolCallId(`call-${Math.random().toString(16).slice(2)}`),
     name: 'local_model',
     arguments: args,
   })
@@ -197,3 +213,109 @@ describe('dsh-tool-local-model', () => {
     expect(errorMessage(await callLocalModel(ctx, { action: 'stop', server: 'external' }))).toMatch(/did not start it/)
   })
 })
+
+describe('the /local-model command', () => {
+  /** Resolve the registered command and return a caller taking its raw input. */
+  async function commandRunner(ctx: Context): Promise<(rawInput: string) => Promise<CommandResult>> {
+    const definition = ctx.commands.find({} as never, 'local-model')
+    if (definition === undefined) throw new Error('/local-model was not registered')
+    return async rawInput => definition.handler({ rawInput } as unknown as CommandInvocation)
+  }
+
+  it('starts a configured server without a model turn', async () => {
+    const port = await releasedPort()
+    const ctx = await setupWithCommands({
+      servers: { ollama: { command: 'ollama', args: ['serve'], cwd: process.cwd(), port } },
+      startTimeoutMs: 15_000,
+    })
+    const provider = ctx.get('subprocess') as unknown as FakeSubprocess
+    provider.onSpawn = () => {
+      cleanup.push(openListing(['qwen2.5:7b'], port).close)
+    }
+
+    const result = await (await commandRunner(ctx))('start ollama')
+
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('ollama/qwen2.5:7b')
+    expect(provider.specs).toHaveLength(1)
+  })
+
+  it('reports every configured server when invoked bare', async () => {
+    const port = await releasedPort()
+    const ctx = await setupWithCommands({ servers: { strata: { command: 's', cwd: process.cwd(), port } } })
+
+    const result = await (await commandRunner(ctx))('')
+
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('not answering on port')
+  })
+
+  it('echoes the usage for an action it does not implement', async () => {
+    const ctx = await setupWithCommands({ servers: {} })
+
+    const result = await (await commandRunner(ctx))('launch strata')
+
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('Usage: /local-model')
+  })
+
+  it('toggles only the default server when invoked bare', async () => {
+    const ollamaPort = await releasedPort()
+    const strataPort = await releasedPort()
+    const ctx = await setupWithCommands({
+      servers: {
+        ollama: { command: 'ollama', args: ['serve'], cwd: process.cwd(), port: ollamaPort },
+        strata: { command: 'strata', cwd: process.cwd(), port: strataPort },
+      },
+      default: 'strata',
+      startTimeoutMs: 15_000,
+    })
+    const provider = ctx.get('subprocess') as unknown as FakeSubprocess
+    provider.onSpawn = (spec) => {
+      if (spec.argv[0] === 'strata') cleanup.push(openListing(['qwen3.8-flash-next-iq2_xs'], strataPort).close)
+    }
+
+    const result = await (await commandRunner(ctx))('toggle')
+
+    expect(result.kind).toBe('success')
+    expect(provider.specs).toHaveLength(1)
+    expect(provider.specs[0]?.argv[0]).toBe('strata')
+    expect(result.text).toContain('strata/qwen3.8-flash-next-iq2_xs')
+  })
+
+  it('stops the other engine when one starts, because the composition is exclusive', async () => {
+    const ollamaPort = await releasedPort()
+    const strataPort = await releasedPort()
+    const ctx = await setupWithCommands({
+      servers: {
+        ollama: { command: 'ollama', args: ['serve'], cwd: process.cwd(), port: ollamaPort },
+        strata: { command: 'strata', cwd: process.cwd(), port: strataPort },
+      },
+      default: 'ollama',
+      startTimeoutMs: 15_000,
+    })
+    const provider = ctx.get('subprocess') as unknown as FakeSubprocess
+    const opened = new Set<number>()
+    provider.onSpawn = (spec) => {
+      const port = spec.argv[0] === 'strata' ? strataPort : ollamaPort
+      if (opened.has(port)) return
+      opened.add(port)
+      cleanup.push(openListing(['served'], port).close)
+    }
+    const run = await commandRunner(ctx)
+    await run('start ollama')
+
+    const result = await run('start strata')
+
+    expect(result.kind).toBe('success')
+    expect(provider.specs.map(spec => spec.argv[0])).toEqual(['ollama', 'strata'])
+    expect(provider.terminated.map(spec => spec.argv[0])).toEqual(['ollama'])
+  })
+
+  it('registers no command where the composition has no command registry', async () => {
+    const ctx = await setup({ servers: {} })
+
+    expect(ctx.get('commands')).toBeUndefined()
+  })
+})
+

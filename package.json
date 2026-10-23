@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-local-model",
-  "version": "0.1.0",
-  "description": "Start, stop, and inspect local inference servers (Strata, Ollama, llama.cpp) from a DeepSeek Harness model turn",
+  "version": "0.2.3",
+  "description": "Start, stop, and inspect local inference servers (Strata, Ollama, llama.cpp) from a composer button, a /local-model command, or a model turn",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -20,17 +20,33 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
+    "client",
+    "cordis.patch.yml",
     "lib",
     "src"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/miloye7711-dotcom/dsh-local-model.git"
   },
   "engines": {
+    "dsh": ">=0.2.1-rc.2 <0.3.0",
     "node": "^22.19 || >=24"
   },
   "scripts": {
@@ -43,15 +59,22 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-subprocess": "^0.1.1-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.1"
+    "@deepseek-ai/dsh-commands": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-llm": "^0.1.1-rc.1",
-    "@deepseek-ai/dsh-subprocess": "^0.1.1-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "^0.1.1-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.1",
+    "@deepseek-ai/dsh-commands": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
